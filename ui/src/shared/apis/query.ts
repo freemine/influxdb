@@ -94,6 +94,8 @@ const processSuccessResponse = async (
   const reader = response.body.getReader()
   const decoder = new TextDecoder()
 
+console.log('reader', reader)
+
   let csv = ''
   let bytesRead = 0
   let didTruncate = false
