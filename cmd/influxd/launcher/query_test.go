@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"html/template"
 	"io"
-	"io/ioutil"
 	"math/rand"
 	nethttp "net/http"
 	"strings"
@@ -17,7 +16,6 @@ import (
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/influxdata/flux"
-	"github.com/influxdata/flux/csv"
 	"github.com/influxdata/flux/execute"
 	"github.com/influxdata/flux/execute/executetest"
 	"github.com/influxdata/flux/lang"
@@ -750,23 +748,24 @@ from(bucket: "%s")
 }
 
 func TestLauncher_PushDownAggregates(t *testing.T) {
-	l := launcher.RunTestLauncherOrFail(t, ctx,
-		"--feature-flags",
-		"pushDownGroupAggregateFirst=true",
-		"--feature-flags",
-		"pushDownGroupAggregateLast=true",
-	)
-
-	defer l.ShutdownOrFail(t, ctx)
-
-	org := l.OnBoardOrFail(t, &influxdb.OnboardingRequest{
-		User:     "user",
-		Password: "password",
-		Org:      "org",
-		Bucket:   "bucket",
-	})
-
-	l.WriteOrFail(t, org, `
+	testcases := []struct {
+		name  string
+		skip  bool
+		query string
+		data  string
+		want  string
+		op    string
+	}{
+		{
+			name: "group first",
+			query: `
+from(bucket: "bucket")
+	|> range(start: 0)
+	|> group(columns: ["t"])
+	|> first()
+	|> keep(columns: ["_time", "_value", "field", "t"])
+`,
+			data: `
 m,t=a f=1i 01
 m,t=a f=2i 02
 m,t=a f=3i 03
@@ -775,115 +774,97 @@ m,t=b f=4i 05
 m,t=b f=3i 06
 m,t=b f=2i 07
 m,t=b f=1i 08
-`)
-
-	t.Run("group first", func(t *testing.T) {
-		query := `
-from(bucket: "bucket")
-	|> range(start: 0)
-	|> group(columns: ["t"])
-	|> first()
-	|> keep(columns: ["_time", "_value", "field", "t"])`
-
-		want := `,result,table,_time,_value,t
+`,
+			want: `,result,table,_time,_value,t
 ,_result,0,1970-01-01T00:00:00.000000001Z,1,a
 ,_result,1,1970-01-01T00:00:00.000000005Z,4,b
-`
-
-		if got := l.QueryFlux(t, org.Org, org.Auth.Token, query); got != want {
-			t.Fatalf("unexpected result: -want/+got\n%s", cmp.Diff(want, got))
-		}
-		if readOpCount(t, l, "readGroup(first)") != 1 {
-			t.Fatal("first was not pushed down")
-		}
-	})
-
-	t.Run("group last", func(t *testing.T) {
-		query := `
+`,
+			op: "readGroup(first)",
+		},
+		{
+			name: "group last",
+			query: `
 from(bucket: "bucket")
 	|> range(start: 0)
 	|> group(columns: ["t"])
 	|> last()
-	|> keep(columns: ["_time", "_value", "field", "t"])`
-
-		want := `,result,table,_time,_value,t
+	|> keep(columns: ["_time", "_value", "field", "t"])
+`,
+			data: `
+m,t=a f=1i 01
+m,t=a f=2i 02
+m,t=a f=3i 03
+m,t=a f=4i 04
+m,t=b f=4i 05
+m,t=b f=3i 06
+m,t=b f=2i 07
+m,t=b f=1i 08
+`,
+			want: `,result,table,_time,_value,t
 ,_result,0,1970-01-01T00:00:00.000000004Z,4,a
 ,_result,1,1970-01-01T00:00:00.000000008Z,1,b
-`
-
-		if got := l.QueryFlux(t, org.Org, org.Auth.Token, query); got != want {
-			t.Fatalf("unexpected result: -want/+got\n%s", cmp.Diff(want, got))
-		}
-		if readOpCount(t, l, "readGroup(last)") != 1 {
-			t.Fatal("last was not pushed down")
-		}
-	})
-
-	t.Run("bare first", func(t *testing.T) {
-		t.Skip("bare first not implemented")
-
-		query := `
+`,
+			op: "readGroup(last)",
+		},
+		{
+			name: "bare first",
+			skip: true,
+			query: `
 from(bucket: "bucket")
 	|> range(start: 0)
 	|> first()
-	|> keep(columns: ["_time", "_value", "field", "t"])`
-
-		want := `,result,table,_time,_value,t
+	|> keep(columns: ["_time", "_value", "field", "t"])
+`,
+			data: `
+m,t=a f=1i 01
+m,t=a f=2i 02
+m,t=a f=3i 03
+m,t=a f=4i 04
+m,t=b f=4i 05
+m,t=b f=3i 06
+m,t=b f=2i 07
+m,t=b f=1i 08
+`,
+			want: `,result,table,_time,_value,t
 ,_result,0,1970-01-01T00:00:00.000000001Z,1,a
 ,_result,1,1970-01-01T00:00:00.000000005Z,4,b
-`
-
-		if got := l.QueryFlux(t, org.Org, org.Auth.Token, query); got != want {
-			t.Fatalf("unexpected result: -want/+got\n%s", cmp.Diff(want, got))
-		}
-		if readOpCount(t, l, "readWindow(first)") != 1 {
-			t.Fatal("first was not pushed down")
-		}
-	})
-
-	t.Run("bare last", func(t *testing.T) {
-		t.Skip("bare last not implemented")
-
-		query := `
+`,
+			op: "readWindow(first)",
+		},
+		{
+			name: "bare last",
+			skip: true,
+			query: `
 from(bucket: "bucket")
 	|> range(start: 0)
 	|> last()
-	|> keep(columns: ["_time", "_value", "field", "t"])`
-
-		want := `,result,table,_time,_value,t
+	|> keep(columns: ["_time", "_value", "field", "t"])
+`,
+			data: `
+m,t=a f=1i 01
+m,t=a f=2i 02
+m,t=a f=3i 03
+m,t=a f=4i 04
+m,t=b f=4i 05
+m,t=b f=3i 06
+m,t=b f=2i 07
+m,t=b f=1i 08
+`,
+			want: `,result,table,_time,_value,t
 ,_result,0,1970-01-01T00:00:00.000000004Z,4,a
 ,_result,1,1970-01-01T00:00:00.000000008Z,1,b
-`
-
-		if got := l.QueryFlux(t, org.Org, org.Auth.Token, query); got != want {
-			t.Fatalf("unexpected result: -want/+got\n%s", cmp.Diff(want, got))
-		}
-		if readOpCount(t, l, "readWindow(last)") != 1 {
-			t.Fatal("last was not pushed down")
-		}
-	})
-}
-
-func readOpCount(t testing.TB, l *launcher.TestLauncher, op string) uint64 {
-	if mf := l.Metrics(t)["query_influxdb_source_read_request_duration_seconds"]; mf != nil {
-		for _, m := range mf.Metric {
-			for _, label := range m.Label {
-				if label.GetName() == "op" && label.GetValue() == op {
-					return m.Histogram.GetSampleCount()
-				}
-			}
-		}
-	}
-	return 0
-}
-
-func TestLauncher_Query_PushDownWindowAggregateAndBareAggregate(t *testing.T) {
-	l := launcher.RunTestLauncherOrFail(t, ctx,
-		"--feature-flags", "pushDownWindowAggregateCount=true")
-	l.SetupOrFail(t)
-	defer l.ShutdownOrFail(t, ctx)
-
-	l.WritePointsOrFail(t, `
+`,
+			op: "readWindow(last)",
+		},
+		{
+			name: "window count",
+			query: `
+from(bucket: "bucket")
+	|> range(start: 1970-01-01T00:00:00Z, stop: 1970-01-01T00:00:15Z)
+	|> aggregateWindow(every: 5s, fn: count)
+	|> drop(columns: ["_start", "_stop"])
+`,
+			data: `
 m0,k=k0 f=0i 0
 m0,k=k0 f=1i 1000000000
 m0,k=k0 f=2i 2000000000
@@ -900,87 +881,92 @@ m0,k=k0 f=5i 12000000000
 m0,k=k0 f=8i 13000000000
 m0,k=k0 f=9i 14000000000
 m0,k=k0 f=5i 15000000000
-`)
-
-	getReadRequestCount := func() uint64 {
-		const metricName = "query_influxdb_source_read_request_duration_seconds"
-		mf := l.Metrics(t)[metricName]
-		if mf != nil {
-			for _, m := range mf.Metric {
-				for _, label := range m.Label {
-					if label.GetName() == "op" && label.GetValue() == "readWindowAggregate" {
-						return m.Histogram.GetSampleCount()
-					}
-				}
-			}
-		}
-		return 0
-	}
-
-	for _, tt := range []struct {
-		name string
-		q    string
-		res  string
-	}{
-		{
-			name: "count",
-			q: `
-from(bucket: v.bucket)
-	|> range(start: 1970-01-01T00:00:00Z, stop: 1970-01-01T00:00:15Z)
-	|> aggregateWindow(every: 5s, fn: count)
-	|> drop(columns: ["_start", "_stop"])
 `,
-			res: `
-#datatype,string,long,dateTime:RFC3339,long,string,string,string
-#group,false,false,false,false,true,true,true
-#default,_result,,,,,,
-,result,table,_time,_value,_field,_measurement,k
-,,0,1970-01-01T00:00:05Z,5,f,m0,k0
-,,0,1970-01-01T00:00:10Z,5,f,m0,k0
-,,0,1970-01-01T00:00:15Z,5,f,m0,k0
+			want: `,result,table,_time,_value,_field,_measurement,k
+,_result,0,1970-01-01T00:00:05Z,5,f,m0,k0
+,_result,0,1970-01-01T00:00:10Z,5,f,m0,k0
+,_result,0,1970-01-01T00:00:15Z,5,f,m0,k0
 `,
+			op: "readWindowAggregate",
 		},
 		{
 			name: "bare count",
-			q: `
-from(bucket: v.bucket)
+			query: `
+from(bucket: "bucket")
 	|> range(start: 1970-01-01T00:00:00Z, stop: 1970-01-01T00:00:15Z)
 	|> count()
 	|> drop(columns: ["_start", "_stop"])
 `,
-			res: `
-#group,false,false,false,true,true,true
-#datatype,string,long,long,string,string,string
-#default,_result,,,,,
-,result,table,_value,_field,_measurement,k
-,,0,15,f,m0,k0
+			data: `
+m0,k=k0 f=0i 0
+m0,k=k0 f=1i 1000000000
+m0,k=k0 f=2i 2000000000
+m0,k=k0 f=3i 3000000000
+m0,k=k0 f=4i 4000000000
+m0,k=k0 f=5i 5000000000
+m0,k=k0 f=6i 6000000000
+m0,k=k0 f=5i 7000000000
+m0,k=k0 f=0i 8000000000
+m0,k=k0 f=6i 9000000000
+m0,k=k0 f=6i 10000000000
+m0,k=k0 f=7i 11000000000
+m0,k=k0 f=5i 12000000000
+m0,k=k0 f=8i 13000000000
+m0,k=k0 f=9i 14000000000
+m0,k=k0 f=5i 15000000000
 `,
+			want: `,result,table,_value,_field,_measurement,k
+,_result,0,15,f,m0,k0
+`,
+			op: "readWindowAggregate",
 		},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			wantCount := getReadRequestCount() + 1
+	}
 
-			prelude := fmt.Sprintf("v = {bucket: \"%s\", timeRangeStart: 1970-01-01T00:00:00Z, timeRangeStop: 1970-01-01T00:00:15Z}", l.Bucket.Name)
-			queryStr := prelude + "\n" + tt.q
-			res := l.MustExecuteQuery(queryStr)
-			defer res.Done()
-			got := flux.NewSliceResultIterator(res.Results)
-			defer got.Release()
-
-			dec := csv.NewMultiResultDecoder(csv.ResultDecoderConfig{})
-			want, err := dec.Decode(ioutil.NopCloser(strings.NewReader(tt.res)))
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer want.Release()
-
-			if err := executetest.EqualResultIterators(want, got); err != nil {
-				t.Fatal(err)
+	for _, tc := range testcases {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.skip {
+				t.Skip(tc.name)
 			}
 
-			if want, got := wantCount, getReadRequestCount(); want != got {
-				t.Fatalf("unexpected sample count -want/+got:\n\t- %d\n\t+ %d", want, got)
+			l := launcher.RunTestLauncherOrFail(t, ctx,
+				"--feature-flags",
+				"pushDownGroupAggregateFirst=true",
+				"--feature-flags",
+				"pushDownGroupAggregateLast=true",
+				"--feature-flags",
+				"pushDownWindowAggregateCount=true",
+			)
+
+			defer l.ShutdownOrFail(t, ctx)
+
+			org := l.OnBoardOrFail(t, &influxdb.OnboardingRequest{
+				User:     "user",
+				Password: "password",
+				Org:      "org",
+				Bucket:   "bucket",
+			})
+
+			l.WriteOrFail(t, org, tc.data)
+
+			if got := l.QueryFlux(t, org.Org, org.Auth.Token, tc.query); got != tc.want {
+				t.Fatalf("unexpected result: -want/+got\n%s", cmp.Diff(tc.want, got))
+			}
+			if readOpCount(t, l, tc.op) != 1 {
+				t.Fatalf("storage read operation %s was not performed", tc.op)
 			}
 		})
 	}
+}
+
+func readOpCount(t testing.TB, l *launcher.TestLauncher, op string) uint64 {
+	if mf := l.Metrics(t)["query_influxdb_source_read_request_duration_seconds"]; mf != nil {
+		for _, m := range mf.Metric {
+			for _, label := range m.Label {
+				if label.GetName() == "op" && label.GetValue() == op {
+					return m.Histogram.GetSampleCount()
+				}
+			}
+		}
+	}
+	return 0
 }
