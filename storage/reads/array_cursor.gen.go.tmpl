@@ -248,9 +248,6 @@ type {{.name}}WindowLimitArrayCursor struct {
 }
 
 func new{{.Name}}WindowLimitArrayCursor(cur cursors.{{.Name}}ArrayCursor, every int64) *{{.name}}WindowLimitArrayCursor {
-	if every == 0 {
-		every = math.MaxInt64
-	}
 	return &{{.name}}WindowLimitArrayCursor{
 		{{.Name}}ArrayCursor: cur,
 		every: every,
@@ -267,6 +264,11 @@ func (c *{{.name}}WindowLimitArrayCursor) Stats() cursors.CursorStats {
 func (c *{{.name}}WindowLimitArrayCursor) Next() *cursors.{{.Name}}Array {
 	c.res.Timestamps = c.res.Timestamps[:0]
 	c.res.Values = c.res.Values[:0]
+
+	every := c.every
+	if every == 0 {
+		every = math.MaxInt64
+	}
 
 NEXT:
 	var a *cursors.{{.Name}}Array
@@ -286,8 +288,8 @@ NEXT:
 			continue
 		}
 
-		beg := t - t % c.every
-		end := beg + c.every
+		beg := t - t % every
+		end := beg + every
 
 		c.final = end
 
